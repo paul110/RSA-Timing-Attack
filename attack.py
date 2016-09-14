@@ -8,7 +8,7 @@ global ro_s
 global omega
 
 global sampleSize
-sampleSize = 3500
+sampleSize = 1500
 
 global base
 base = 2**64
@@ -25,16 +25,14 @@ lookAhead = 3
 global interactions
 interactions = 0
 
-
-
 def getLimb(x, i):
     global base
     result = (x >> 64*i) & (base-1)
     return result
 
-def calc_ro(n):
+def calc_ro(nrOfBits):
     ro = 1
-    while ro < n:
+    while ro < nrOfBits:
         ro = ro << 64
     return  ro
 
@@ -42,8 +40,6 @@ def interact(  c ) :
   global interactions
   interactions += 1
   target_in.write("{0:X}".format(c) + "\n")
-  # target_in.write(n + "\n"  )
-  # target_in.write(d  + "\n"  )
 
   time = int( target_out.readline().strip())
   message = int(target_out.readline().strip(), 16)
@@ -92,47 +88,45 @@ def computeSamples(n):
     ro_s = calc_ro_square(n)
     omega = getOmega(n)
 
+    mont_messages = []
     messages = []
-    mess_origin = []
     timings = []
     results = []
     for j in range(0, sampleSize):
         m = random.getrandbits(n.bit_length())
         while m > n :
             m = random.getrandbits(n.bit_length())
-        mess_origin.append(m)
-        messages.append(MontMul(mess_origin[j], ro_s, n, omega)[0])
+        messages.append(m)
+        mont_messages.append(MontMul(messages[j], ro_s, n, omega)[0])
 
         res = interact(m)
         timings.append(res[0])
         results.append(res[1])
-    return (mess_origin, messages, timings, results)
+    return (messages, mont_messages, timings, results)
 
-def updateMessages(messages ,d, n):
+def updateMessages(messages, currentKey, n):
     currentSet = messages[:]
     for i in range(0, len(messages)):
         currentSet[i] = MontMul(currentSet[i], currentSet[i], n, omega)[0]
 
-    for j in range(1, len(d)):
-        for i in range(0, len(messages)):
-            if(d[j] == "1"):
+    for i in range(0, len(messages)):
+        for j in range(1, len(currentKey)):
+            if(currentKey[j] == "1"):
                 currentSet[i] = MontMul(currentSet[i], messages[i], n, omega)[0]
             currentSet[i] = MontMul(currentSet[i], currentSet[i], n , omega)[0]
     return currentSet
 
 def checkKey( message, result, d):
-    d1 = int(d + "1", 2)
-    d0 = int(d + "0", 2)
+    key_1 = int(d + "1", 2)
+    key_0 = int(d + "0", 2)
 
     # choose which prediction was right and output key
-    if pow(message, d1, n) == result:
-        # print "key : ", "{0:X}".format(d1)
+    if pow(message, key_1, nrOfBits) == result:
         return (1, "1")
-    else :
-        if pow(message, d0, n)== result:
-            # print "key : ", "{0:X}".format(d0)
-            return (1, "0")
-    # print "no key found", "{0:X}".format(int(d, 2))
+
+    if pow(message, key_0, nrOfBits)== result:
+        return (1, "0")
+
     return (0, "0")
 
 def getKeySize(n):
@@ -149,114 +143,174 @@ def getKeySize(n):
     # return keySize
 
 class sampleMessages (threading.Thread):
-    def __init__(self, n, sampleSize):
+    def __init__(self, nrOfBits, sampleSize):
         threading.Thread.__init__(self)
-        self.n = n
+        self.n = nrOfBits
         self.sampleSize = sampleSize
     def run(self):
         ro_s = calc_ro_square(self.n)
         omega = getOmega(self.n)
-        mess_origin = []
-        while len(mess_origin) < self.sampleSize:
-            m = random.getrandbits(n.bit_length())
-            while m > n :
-                m = random.getrandbits(n.bit_length())
-            mess_origin.append(m)
-        self.mess_origin = mess_origin
+        messages = []
+        while len(messages) < self.sampleSize:
+            m = random.getrandbits(nrOfBits.bit_length())
+            while m > nrOfBits :
+                m = random.getrandbits(nrOfBits.bit_length())
+            messages.append(m)
+        self.messages = messages
     def join(self):
-        return self.mess_origin
+        return self.messages
 
 def checkAnormal(diff1, diff2):
     if (abs(diff1 - diff2) < treshold) | ((diff1 < 0) & (diff2 < 0)):
         return 1
     return 0
 
-def attack(n, e):
+class Group(object):
+    time = 0
+    size = 0
+
+def simulateStep( mont_messages, currentSet, nrOfBits, groups, time  ):
+    encoded_1 = currentSet[:]
+    encoded_0 = currentSet[:]
+    for i in range(0, len(mont_messages)):
+        # assume bit j is 0
+        (encoded_0[i], extra) = MontMul(currentSet[i], currentSet[i], nrOfBits, omega)
+        # if extra reduction
+        if extra :
+            groups[3].time += time[i]
+            groups[3].size += 1
+        # if no extra reduction
+        else :
+            groups[4].time += time[i]
+            groups[4].size += 1
+
+        # assume bit j is 1
+        (temp, extra) = MontMul(currentSet[i], mont_messages[i], nrOfBits , omega)
+        (encoded_1[i], extra) = MontMul(temp, temp, nrOfBits ,omega)
+
+        # if extra reduction
+        if extra :
+            groups[1].time += time[i]
+            groups[1].size +=1
+        # if no extra reduction
+        else :
+            groups[2].time += time[i]
+            groups[2].size +=1
+    return (groups, encoded_0, encoded_1)
+
+def compute_differences( groups ):
+
+    # compute averaget time for all 4 groups
+    uF1 = float(groups[1].time)/groups[1].size
+    uF2 = float(groups[2].time)/groups[2].size
+    uF3 = float(groups[3].time)/groups[3].size
+    uF4 = float(groups[4].time)/groups[4].size
+
+    # compute differences between pari groups
+    diff1 = uF1 - uF2
+    diff2 = uF3 - uF4
+
+    return (diff1, diff2)
+
+def look_Ahead(bitCheck, encoded_0, encoded_1, messages, results, mont_messages, nrOfBits, time, key):
+    global lookAhead
+
+    key += str(bitCheck)
+    (validKey, bit) = checkKey(messages[0], results[0], key)
+    if validKey :
+        key += str(bit)
+        return (validKey, key, delta)
+
+    if bitCheck :
+        temp_encoded  = encoded_1[:]
+    else:
+        temp_encoded  = encoded_0[:]
+    delta = 0
+    for y in range(0, lookAhead):
+        groups  = [ Group() for i in range(5)]
+
+        (groups, encoded_0, encoded_1 ) = simulateStep( mont_messages, temp_encoded, nrOfBits, groups, time );
+
+        (diff1, diff2) = compute_differences( groups )
+
+        bit = 0
+        if diff1 > diff2:
+            bit = 1
+
+        if bit :
+            temp_encoded = encoded_1[:]
+        else:
+            temp_encoded = encoded_0[:]
+        key += str(bit)
+        # print "ver1 : ", len(key_0), ": ",  bit, "------", abs(int(diff1 - diff2)), "--------", int(diff1), int(diff2), "error:", error
+        (validKey, bit) = checkKey(messages[0], results[0], key)
+        if validKey :
+            key += str(bit)
+            return (validKey, key, delta)
+
+        if not checkAnormal(diff1, diff2) :
+            delta += abs(int(diff1 - diff2))
+
+    return (validKey, key, delta)
+
+def attack(nrOfBits, e):
     global sampleSize
 
     # set start conditions
-    valid = 0
-    keySize = 64
-    stableKey = "1"
+    validKey = 0
+    keySize  = 64
+    foundKey = "1"
 
-    while (keySize < maxKeySize) &  (not valid):
+    # while the key is within the limits of the maximum key and it is not valid
+    while (keySize < maxKeySize) &  (not validKey):
+
         # re-initialise everything
-        mess_origin = []
-        messages    = []
-        currentSet  = []
-        results     = []
-        time        = []
-        stablekeySet= 0
-        # generate sample messages of n bits
-        generateMessages = sampleMessages(n, sampleSize)
-        generateMessages.run()
-        mess_origin += generateMessages.join()
-        currentSetTest = []
+        messages        = []
+        mont_messages   = []
+        currentSet      = []
+        results         = []
+        time            = []
+        stablekeySet    = 0
+        error           = 0
 
-        # set key to stable key
-        d = stableKey
+        # generate new sample messages of nrOfBits bits
+        generateMessages = sampleMessages(nrOfBits, sampleSize)
+        generateMessages.run()
+
+        # add new messages to the current set of messages
+        messages += generateMessages.join()
+
+        # reset key to stable key
+        currentKey = foundKey
+
         # compute times taken to decrypt each message
-        for i in range(0, len(mess_origin)):
-            # get times for each message
-            res = interact(mess_origin[i])
+        for i in range(0, len(messages)):
+
+            # get times for each message ( res[0] is the time taken to decrypt, and res[1] is decrypted message)
+            res = interact(messages[i])
             results.append(res[1])
             time.append( res[0] )
+
             # transform each message into montgomery form
-            messages.append(MontMul(mess_origin[i], ro_s, n, omega)[0])
+            mont_messages.append(MontMul(messages[i], ro_s, nrOfBits, omega)[0])
 
         print "Sample Size: ", sampleSize
         print "Interactions: ", interactions
-        print "Start from key bit ", len(d)
+        print "Start from key bit ", len(currentKey)
 
-        currentSet = updateMessages(messages, d, n)
-        set1 = currentSet[:]
-        set0 = currentSet[:]
+        currentSet = updateMessages(mont_messages, currentKey, nrOfBits)
+        encoded_1 = currentSet[:]
+        encoded_0 = currentSet[:]
         stableSet = currentSet[:]
 
-        #reset errors
-        error = 0
-
         # discover the next bits untill the last bit which needs to be guessed
-        while ((not valid) & (len(d) <= keySize) & (error < 7)):
+        while ((len( currentKey ) <= keySize) & (error < 7)):
             warning = 0
-            j = len(d)
-            groupTime = [0, 0, 0, 0, 0]
-            groupSize = [0, 0, 0, 0, 0]
+            groups  = [ Group() for i in range(5)]
 
-            for i in range(0, len(messages)):
-                # assume bit j is 0
-                (set0[i], extra) = MontMul(currentSet[i], currentSet[i], n, omega)
-                # if extra reduction
-                if extra :
-                    groupTime[3] += time[i]
-                    groupSize[3] +=1
-                # if no extra reduction
-                else :
-                    groupTime[4] += time[i]
-                    groupSize[4] += 1
+            (groups, encoded_0, encoded_1 ) = simulateStep( mont_messages, currentSet, nrOfBits, groups, time );
 
-                # assume bit j is 1
-                (temp, extra) = MontMul(currentSet[i], messages[i], n , omega)
-                (set1[i], extra) = MontMul(temp, temp, n ,omega)
-                # if extra reduction
-                if extra :
-                    groupTime[1] += time[i]
-                    groupSize[1] +=1
-                # if no extra reduction
-                else :
-                    groupTime[2] += time[i]
-                    groupSize[2] +=1
-
-
-            # compute averaget time for all 4 groups
-            uF1 = float(groupTime[1])/groupSize[1]
-            uF2 = float(groupTime[2])/groupSize[2]
-            uF3 = float(groupTime[3])/groupSize[3]
-            uF4 = float(groupTime[4])/groupSize[4]
-
-            # compute differences between pari groups
-            diff1 = uF1 - uF2
-            diff2 = uF3 - uF4
+            (diff1, diff2) = compute_differences( groups )
 
             # condition for anormal behaviour
             if checkAnormal(diff1, diff2) :
@@ -264,184 +318,58 @@ def attack(n, e):
                 error += 2
             else :
                 if error > 0:
-                    error -=1
+                    error -= 1
                 warning = 0
 
             if warning > 0 :
-                # print "--------------------DEJA EROARE ",error, " ORI---------------"
-                print "warning at bit", len(d)
+                print "warning at bit", len( currentKey )
                 stablekeySet = 1
-                # branch to 0 and 1
-                saveSet0 = set0[:]
-                saveSet1 = set1[:]
-                turnsDelta = [0, 0]
-                flags = [0, 0]
-                currentSet0  = set0[:]
-                currentSet1 = set1[:]
-                d1 = d + "1"
-                d0 = d + "0"
-                (valid, bit) = checkKey(mess_origin[0], results[0], d0)
-                if valid :
-                    d = d0 + str(bit)
-                    return d
-                    # print "!!!!!!!!!!!!!!FoundKey!!!!!!!!!!!!!!!"
+
+                # check following rounds for bit 0
+                (validKey, possibleKey, delta0) = look_Ahead(0, encoded_0, encoded_1, messages, results, mont_messages, nrOfBits, time, currentKey)
+                if(validKey):
+                    return possibleKey
+
+                # check following rounds for bit 1
+                (validKey, possibleKey, delta1) = look_Ahead(1, encoded_0, encoded_1, messages, results, mont_messages, nrOfBits, time, currentKey)
+                if(validKey):
+                    return possibleKey
+
+                # decide which set was better
+                if(delta0 < delta1) :
+                    bit = 1
                 else :
-                    (valid, bit) = checkKey(mess_origin[0], results[0], d1)
-                    if valid :
-                        d = d1 + str(bit)
-                        return d
-                        # print "!!!!!!!!!!!!!!FoundKey!!!!!!!!!!!!!!!"
-                if not valid :
-                    # print "ver1", len(d0), ":",  d0[len(d0)-1], "----------------", int(diff1), int(diff2)
+                    bit = 0
 
-                    # check following rounds for bit 0
-                    for y in range(0, lookAhead):
-                        groupTime = [0, 0, 0, 0, 0]
-                        groupSize = [0, 0, 0, 0, 0]
-
-                        for k in range(0, len(currentSet)):
-
-                            (set0[k], extra) = MontMul(currentSet0[k], currentSet0[k], n, omega)
-                            if extra :
-                                groupTime[3] += time[k]
-                                groupSize[3] += 1
-                            else :
-                                groupTime[4] += time[k]
-                                groupSize[4] += 1
-
-                            (temp, extra) = MontMul(currentSet0[k], messages[k], n, omega)
-                            (set1[k], extra) = MontMul(temp, temp, n, omega)
-                            if extra :
-                                groupTime[1] += time[k]
-                                groupSize[1] +=1
-                            # if no extra reduction
-                            else :
-                                groupTime[2] += time[k]
-                                groupSize[2] +=1
-
-                        uF1 = float(groupTime[1])/groupSize[1]
-                        uF2 = float(groupTime[2])/groupSize[2]
-                        uF3 = float(groupTime[3])/groupSize[3]
-                        uF4 = float(groupTime[4])/groupSize[4]
-
-                        diff1 = uF1 - uF2
-                        diff2 = uF3 - uF4
-
-                        bit = 0
-                        if diff1 > diff2:
-                            bit = 1
-                        if checkAnormal(diff1, diff2):
-                            flags[0] = 1
-
-                        if bit :
-                            currentSet0 = set1[:]
-                        else:
-                            currentSet0 = set0[:]
-                        d0 += str(bit)
-                        # print "ver1 : ", len(d0), ": ",  bit, "------", abs(int(diff1 - diff2)), "--------", int(diff1), int(diff2), "error:", error
-                        (valid, bit) = checkKey(mess_origin[0], results[0], d0)
-                        if valid :
-                            d = d0 + str(bit)
-                            return d
-                            # print "!!!!!!!!!!!!!!FoundKey!!!!!!!!!!!!!!!"
-
-                        if not checkAnormal(diff1, diff2) :
-                            turnsDelta[0] += abs(int(diff1 - diff2))
-
-
-                    # print "ver2", len(d1), ":",  d1[len(d1)-1], "---------------"
-                    # check following rounds for bit 0
-                    for y in range(0, lookAhead):
-                        groupTime = [0, 0, 0, 0, 0]
-                        groupSize = [0, 0, 0, 0, 0]
-                        for k in range(0, len(currentSet1)):
-
-                            (set0[k], extra) = MontMul(currentSet1[k], currentSet1[k], n, omega)
-                            if extra :
-                                groupTime[3] += time[k]
-                                groupSize[3] += 1
-                            else :
-                                groupTime[4] += time[k]
-                                groupSize[4] += 1
-
-                            (temp, extra) = MontMul(currentSet1[k], messages[k], n, omega)
-                            (set1[k], extra) = MontMul(temp, temp, n, omega)
-                            if extra :
-                                groupTime[1] += time[k]
-                                groupSize[1] +=1
-                            # if no extra reduction
-                            else :
-                                groupTime[2] += time[k]
-                                groupSize[2] +=1
-
-                        uF1 = float(groupTime[1])/groupSize[1]
-                        uF2 = float(groupTime[2])/groupSize[2]
-                        uF3 = float(groupTime[3])/groupSize[3]
-                        uF4 = float(groupTime[4])/groupSize[4]
-
-                        diff1 = uF1 - uF2
-                        diff2 = uF3 - uF4
-
-                        bit = 0
-                        if diff1 > diff2:
-                            bit = 1
-                        if checkAnormal(diff1, diff2):
-                            flags[1] =  1
-                        if bit :
-                            currentSet1 = set1[:]
-                        else:
-                            currentSet1 = set0[:]
-                        d1 += str(bit)
-                        # print "ver2:", len(d1), ": ",  bit, "------", abs(int(diff1 - diff2)), "--------", int(diff1), int(diff2), "error:", error
-                        # if( diff1 == 0) :
-                            # print "DIFF1 = 0", uF1, uF2
-                        (valid, bit) = checkKey(mess_origin[0], results[0], d1)
-                        if valid :
-                            d = d1 + str(bit)
-                            return d
-                        if not ((diff1 < 0 ) & (diff2 < 0)):
-                            turnsDelta[1] += abs(int(diff1 - diff2))
-
-                    # decide which set was better
-                    set0 = saveSet0[:]
-                    set1 = saveSet1[:]
-                    if(turnsDelta[0] < turnsDelta[1]) :
-                        bit = 1
-                        # print "CHOOSE 2"
-                    else :
-                        # print "CHOOSE 1"
-                        bit = 0
             else :
-                bit = 0
                 #if diff for the groups with assumed bit = 1 is bigger than the diff of the groups with assumed bit = 0, then predict 1, else predict 0
                 if diff1 > diff2:
                     bit = 1
+                else :
+                    bit = 0
+
                 if(not stablekeySet):
-                    stableKey = d
+                    foundKey = currentKey
 
-            if not valid :
-                # depending on which bit is predicted, keep the results computed with that bit for the next round
-                if bit == 1:
-                    currentSet = set1[:]
-                else:
-                    currentSet = set0[:]
+            # depending on which bit is predicted, keep the results computed with that bit for the next round
+            if bit == 1:
+                currentSet = encoded_1[:]
+            else:
+                currentSet = encoded_0[:]
 
-                if (error == 0) & (abs(diff1-diff2) > 50 ) :
-                    stableSet = currentSet[:]
+            if (error == 0) & (abs(diff1-diff2) > 50 ) :
+                stableSet = currentSet[:]
 
-                # add the predicted bit to the key
-                # print j+1, ": ",  bit, "------", abs(int(diff1 - diff2)), "--------", int(diff1), int(diff2), "error:", error
-                d+= str(bit)
-                (valid, bit ) = checkKey(mess_origin[0], results[0], d)
-                if valid:
-                    return d + str(bit)
+            # add the predicted bit to the key
+            currentKey += str(bit)
+            (validKey, bit ) = checkKey(messages[0], results[0], currentKey)
+            if validKey:
+                return currentKey + str(bit)
+
         else :
-            keySize +=16
-            sampleSize +=1000
-    return d
-
-
-
+            keySize += 16
+            sampleSize += 1000
+    return currentKey
 
 if ( __name__ == "__main__" ) :
 
@@ -449,7 +377,7 @@ if ( __name__ == "__main__" ) :
       raise Exception("not enough argv")
 
     inputFile = open(sys.argv[2])
-    n = int(inputFile.readline(), 16)
+    nrOfBits = int(inputFile.readline(), 16)
     e = int(inputFile.readline(), 16)
     inputFile.close()
 
@@ -465,13 +393,13 @@ if ( __name__ == "__main__" ) :
     key = "1"
 
     global ro
-    ro   = calc_ro(n)
+    ro   = calc_ro(nrOfBits)
 
     global ro_s
-    ro_s = calc_ro_square(n)
+    ro_s = calc_ro_square(nrOfBits)
 
     global omega
-    omega = getOmega(n)
+    omega = getOmega(nrOfBits)
     # Execute a function representing the attacker.
-    key = attack(n, e)
+    key = attack(nrOfBits, e)
     print "FOUND KEY = ", "{0:X}".format(int(key, 2))
