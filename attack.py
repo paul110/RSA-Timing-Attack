@@ -301,7 +301,6 @@ def attack(nrOfBits, e):
         currentSet = updateMessages(mont_messages, currentKey, nrOfBits)
         encoded_1 = currentSet[:]
         encoded_0 = currentSet[:]
-        stableSet = currentSet[:]
 
         # discover the next bits untill the last bit which needs to be guessed
         while ((len( currentKey ) <= keySize) & (error < 7)):
@@ -356,9 +355,6 @@ def attack(nrOfBits, e):
                 currentSet = encoded_1[:]
             else:
                 currentSet = encoded_0[:]
-
-            if (error == 0) & (abs(diff1-diff2) > 50 ) :
-                stableSet = currentSet[:]
 
             # add the predicted bit to the key
             currentKey += str(bit)
