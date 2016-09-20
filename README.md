@@ -4,7 +4,7 @@ RSA attack based on execution time of the target machine
 
 ## Running the program
 
-python attack.py ./target ./68443.conf
+python attack.py ./target ./configuration
 
 ## DESCRIPTION
 
