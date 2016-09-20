@@ -1,11 +1,12 @@
 # RSA-Timing-Attack
 
+RSA attack based on execution time of the target machine
+
 ## Running the program
 
 python attack.py ./target ./68443.conf
 
 ## DESCRIPTION
-Attack based on execution time of the target machine
 
 The file "configuration" represents a text file which contains the RSA modulus on the first line and the RSA public exponent on the second one, both represented as hexadecimal integer strings.
 
